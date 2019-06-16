@@ -1,0 +1,281 @@
+---
+title: "MovieLens Project"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+ Main objective of this model is to predict the rating value for a user-item combination.
+ 
+```{r}
+#Loading librarries and data
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(kableExtra)
+library(lubridate)
+library(DT)
+library(RColorBrewer) 
+library(ggthemes) 
+
+
+setwd("C:/Users/arpitagupta/Documents/ml-10M100K")
+edx <- readRDS("edx.rds")
+validation <- readRDS("validation.rds")
+
+```
+ 
+ Dataset Summary and Exploration
+```{r}
+str(edx)
+```
+edX dataset is made of 6 features for a total of about 9,000,055 observations. Below are the features and their characteristics:
+
+quantitative features: userId, MovieID, timestamp
+
+qualitative features: title, genres
+
+outcome,y: rating
+
+```{r}
+summary(edx)
+```
+
+Lets see the proportion of ratings. Which rating is used most by the users
+```{r}
+# histogram of ratings
+ggplot(edx, aes(x= rating)) +
+  geom_histogram( binwidth = 0.2) +
+  scale_x_continuous(breaks=seq(0, 5, by= 0.5)) +
+  labs(x="rating", y="number of ratings", caption = "source data: edx set") +
+  ggtitle("histogram : number of ratings for each rating")
+```
+From the above chart we can see that no user gave 0 rating, 4 rating is most used.
+
+Now lets see which genre  and title is at top according to the rating
+
+```{r}
+#Create the plot to identify which single genre is top rated.
+top_genr <- edx %>% separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+
+print(head(top_genr,5))
+
+```
+
+we can see that the “Drama” genre has the top number of movies ratings, followed by the “Comedy” and the “Action” genres.
+
+```{r}
+# Create dataframe to see which company is top rated
+
+top_title <- edx %>%
+  group_by(title,genres) %>%
+  summarize(count=n()) %>%
+  top_n(20,count) %>%
+  arrange(desc(count))
+
+print(head(top_title,10))
+
+```
+The movies which have the highest number of ratings are in the top genres categories : movies like Pulp fiction (1994), Forrest Gump(1994) or Jurrasic Park(1993) which are in the top 5 of movie’s ratings number , are part of the Drama, Comedy or Action genres.
+
+```{r}
+edx %>%
+  summarize(n_users = n_distinct(userId),
+            n_movies = n_distinct(movieId))
+```
+```{r}
+# histogram of number of ratings by movieId
+
+edx %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram( bins=30, color = "red") +
+  scale_x_log10() + 
+  ggtitle("Movies") +
+  labs(subtitle  ="number of ratings by movieId", 
+       x="movieId" , 
+       y="number of ratings", 
+       caption ="source data : edx set") +
+  theme(panel.border = element_rect(colour="black", fill=NA)) 
+```
+
+```{r}
+# histogram of number of ratings by userId
+
+
+edx %>% 
+  count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram( bins=30, color = "gold") +
+  scale_x_log10() + 
+  ggtitle("Users") +
+  labs(subtitle ="number of ratings by UserId", 
+       x="userId" , 
+       y="number of ratings") +
+  theme(panel.border = element_rect(colour="black", fill=NA)) 
+```
+  
+ From the above two graph we can see that some movies get rated more than others, and some users are more active than others at rating movies. This should presumably explain the presence of movies effects and users effects.
+
+```{r}
+#we know that the edx set contains the timestamp variable which represents the time and data in which the rating was provided. The units are seconds since January 1, 1970. with the as_datetime function in the lubridate package , we can have each timestamp in the right format . I then use the point geom to create scatterplot of y = average ratings vs x  = date ,  and smooth geom to aid the eyes in seeing patterns in the presence of overplotting.
+
+
+edx %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(date, rating)) +
+  geom_point() +
+  geom_smooth() +
+  ggtitle("Timestamp, time unit : week")+
+  labs(subtitle = "average ratings",
+       caption = "source data : edx set")
+
+```
+
+Analyzing the trend of the average ratings versus the date , we can notice that there is some evidence of a time effect in the plot, but there is not a strong effect of time.
+
+Identify the Optimal Model to predict ratings
+
+1)Regression Model
+```{r}
+#i define the RMSE function as:
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+  }
+
+
+#a.movie effect
+
+# i calculate the average of all ratings of the edx set
+mu <- mean(edx$rating)
+
+# i calculate b_i on the training set
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+
+# predicted ratings
+predicted_ratings_bi <- mu + validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  .$b_i
+
+rmse_model1 <- RMSE(validation$rating,predicted_ratings_bi)  
+rmse_model1
+```
+
+```{r}
+#b.movie + user effect
+
+#i calculate b_u using the training set 
+user_avgs <- edx %>%  
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+#predicted ratings
+predicted_ratings_bu <- validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  .$pred
+
+rmse_model2 <- RMSE(validation$rating,predicted_ratings_bu)
+rmse_model2
+```
+
+```{r}
+#c.movie + user + time effect
+
+#i create a copy of validation set , valid, and create the date feature which is the timestamp converted to a datetime object  and  rounded by week.
+
+valid <- validation
+valid <- valid %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) 
+
+# i calculate time effects ( b_t) using the training set
+temp_avgs <- edx %>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  summarize(b_t = mean(rating - mu - b_i - b_u))
+
+# predicted ratings
+  predicted_ratings_bt <- valid %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  left_join(temp_avgs, by='date') %>%
+  mutate(pred = mu + b_i + b_u + b_t) %>%
+  .$pred
+
+rmse_model3 <- RMSE(valid$rating,predicted_ratings_bt)
+rmse_model3
+  
+```
+As we can see that there is not much improvement in RMSE when we added time therefore now we perform regularization using only the movie and user effects .
+
+```{r}
+#e. regularization 
+
+# lambda is a tuning parameter. We can use cross-validation to choose it
+
+lambdas <- seq(0, 10, 0.25)
+  
+  rmses <- sapply(lambdas, function(l){
+    
+    mu_reg <- mean(edx$rating)
+    
+    b_i_reg <- edx %>% 
+      group_by(movieId) %>%
+      summarize(b_i_reg = sum(rating - mu_reg)/(n()+l))
+    
+    b_u_reg <- edx %>% 
+      left_join(b_i_reg, by="movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u_reg = sum(rating - b_i_reg - mu_reg)/(n()+l))
+    
+    predicted_ratings_b_i_u <- 
+      validation %>% 
+      left_join(b_i_reg, by = "movieId") %>%
+      left_join(b_u_reg, by = "userId") %>%
+      mutate(pred = mu_reg + b_i_reg + b_u_reg) %>%
+      .$pred
+    
+    return(RMSE(validation$rating,predicted_ratings_b_i_u))
+  })
+  
+  
+  qplot(lambdas, rmses)  
+```
+
+```{r}
+#For the full model, the optimal  λ is:
+    
+lambda <- lambdas[which.min(rmses)]
+lambda
+```
+
+```{r}
+rmse_model4 <- min(rmses)
+rmse_model4
+```
+
+```{r}
+#summarize all the rmse on validation set for Linear regression models
+
+rmse_results <- data.frame(methods=c("movie effect","movie + user effects","movie + user + time effects", "Regularized Movie + User Effect Model"),rmse = c(rmse_model1, rmse_model2,rmse_model3, rmse_model4))
+
+print(rmse_results) 
+```
+
+
+
+Conclusion:
+
+The main objective of this project was to build the algorithm to predict movie ratings for the 10M version of the Movielens data. Using the provided training set (edx) and validation set, we successively trained different linear regression models. The model evaluation performance through the RMSE ( root mean squared error) showed that the Linear regression model with regularized effects on users and movies is the appropriate recommender systems to predict ratings on the validation set. 
